@@ -5,8 +5,8 @@
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
 
-Extension for Stable Diffusion web-ui enables negative prompt in prompt
-
+Extension for Stable Diffusion web-ui enables negative prompt in prompt.
+This is a hack to make it work on the current sd-webui-forge backend. Possibly really fragile, as I don't really know what I'm doing.
 ## Update 2023.10.29.2100(JST)
 - Option to hide this extention in t2i/i2i tab [Detail](#hide-this-extention-in-text2imgimg2img-tab),[詳細](README_jp.md#txt2imgimg2imgタブで拡張を表示しない),[解释](README_cn.md#在txt2imgimg2img标签中不显示扩展)
 
