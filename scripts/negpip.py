@@ -2,19 +2,28 @@ import gradio as gr
 import torch
 import re
 import json
-import ldm.modules.attention as atm
+from backend import memory_management
+import backend.text_processing
+import backend.text_processing.classic_engine
 import modules.ui
 import modules
+import torch
+import backend
+from torch import nn, einsum
+from einops import rearrange, repeat
+from typing import Optional, Any
+import math
 from modules import prompt_parser
-
-from modules import shared
+from inspect import isfunction
+from modules import shared, sd_models, sd_models_config, sd_models_types, sd_models_xl
+from backend.diffusion_engine.base import ForgeDiffusionEngine, ForgeObjects
 from modules.script_callbacks import CFGDenoiserParams, on_cfg_denoiser, on_ui_settings
 
 debug = False
 debug_p = False
 
 try:
-    from ldm_patched.modules import model_management
+    #from ldm_patched.modules import model_management
     forge = True
 except:
     forge = False
@@ -112,13 +121,24 @@ class Script(modules.scripts.Script):
 
         self.active = active
         self.batch = p.batch_size
-        self.isxl = hasattr(shared.sd_model,"conditioner")
+        self.isxl = p.sd_model.is_sdxl
         
         self.rev = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
         if forge: self.rev = not self.rev
 
-        tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
+        import backend.text_processing.classic_engine as classic
 
+        #model_type = p.sd_model.ModelType
+        # NICE FRAMEWORK, IDIOT
+        # /j
+        #pprint(dir(p))
+        #pprint(dir(p.sd_model))
+        #pprint(dir(p.sd_model.forge_objects.unet))
+        #pprint(dir(p.sd_model.forge_objects.clip))
+        #pprint(dir(p.sd_model.forge_objects.clip.tokenizer))
+        #pprint(p.sd_model.is_sdxl)
+        clip = p.sd_model.forge_objects.clip
+        tokenizer = p.sd_model.text_processing_engine_g
 
         def getshedulednegs(scheduled,prompts):
             output = []
@@ -152,7 +172,7 @@ class Script(modules.scripts.Script):
                                 textweights.append([text,weight])
                                 flag = True
                         padtextweight.append([padd,textweights])
-                        tokens, tokensnum = tokenizer(sep_prompt)
+                        tokens, tokensnum = tokenizer.tokenize_line(sep_prompt)
                         padd = tokensnum // 75 + 1 + padd
                     stepout.append([step,padtextweight])
                 output.append(stepout)
@@ -179,7 +199,7 @@ class Script(modules.scripts.Script):
                 cond = prompt_parser.get_learned_conditioning(shared.sd_model,input,p.steps)
                 if start is None: start = cond[0][0].cond[0:1,:] if not self.isxl else cond[0][0].cond["crossattn"][0:1,:]
                 if end is None: end = cond[0][0].cond[-1:,:] if not self.isxl else cond[0][0].cond["crossattn"][-1:,:]
-                token, tokenlen = tokenizer(target[0])
+                token, tokenlen = tokenizer.tokenize_line(target[0])
                 conds.append(cond[0][0].cond[1:tokenlen +2,:] if not self.isxl else cond[0][0].cond["crossattn"][1:tokenlen +2,:] ) 
             conds = torch.cat(conds, 0)
 
@@ -224,8 +244,8 @@ class Script(modules.scripts.Script):
         def calcsets(A, B):
             return A // B if A % B == 0 else A // B + 1
 
-        self.conlen = calcsets(tokenizer(p.prompts[0])[1],75)
-        self.unlen = calcsets(tokenizer(p.negative_prompts[0])[1],75)
+        self.conlen = calcsets(tokenizer.tokenize_line(p.prompts[0])[1],75)
+        self.unlen = calcsets(tokenizer.tokenize_line(p.negative_prompts[0])[1],75)
 
         if not flag:
             self.active = False
@@ -242,7 +262,7 @@ class Script(modules.scripts.Script):
         if self.rpscript is not None and hasattr(self.rpscript,"hooked"):already_hooked = self.rpscript.hooked
 
         if not already_hooked:
-            self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
+            self.handle = hook_forwards(self, p.sd_model.forge_objects.unet.model)
 
         print(f"NegPiP enable, Positive:{self.conds_all[0][0][1][0][2]},Negative:{self.unconds_all[0][0][1][0][2]}")
 
@@ -295,7 +315,7 @@ from pprint import pprint
 
 def unload(self,p):
     if hasattr(self,"handle"):
-        hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
+        hook_forwards(self, p.sd_model.forge_objects.unet.model, remove=True)
         del self.handle
 
 def hook_forward(self, module):
@@ -399,12 +419,21 @@ def counter(isxl):
         count = 0
     return outpn
 
+# helper functions from LDM
+def exists(val):
+    return val is not None
+
+def default(val, d):
+    if exists(val):
+        return val
+    return d() if isfunction(d) else d
+
 def main_foward(self, module, x, context, mask, additional_tokens, n_times_crossframe_attn_in_self, tokens):
     h = module.heads
     context = context.to(x.dtype)
     q = module.to_q(x)
 
-    context = atm.default(context, x)
+    context = default(context, x)
     k = module.to_k(context)
     v = module.to_v(context)
     if debug: print(h,context.shape,q.shape,k.shape,v.shape)
@@ -413,8 +442,8 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
     dim_head //= h
     scale = dim_head ** -0.5
 
-    q, k, v = map(lambda t: atm.rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
-    sim = atm.einsum('b i d, b j d -> b i j', q, k) * scale
+    q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+    sim = torch.einsum('b i d, b j d -> b i j', q, k) * scale
 
     if self.active:
         if tokens:
@@ -423,17 +452,17 @@ def main_foward(self, module, x, context, mask, additional_tokens, n_times_cross
                 #print("v.shape:",v.shape,"start:",start+1,"stop:",start+token)
                 v[:,start+1:start+token,:] = -v[:,start+1:start+token,:] 
 
-    if atm.exists(mask):
-        mask = atm.rearrange(mask, 'b ... -> b (...)')
+    if exists(mask):
+        mask = rearrange(mask, 'b ... -> b (...)')
         max_neg_value = -torch.finfo(sim.dtype).max
-        mask = atm.repeat(mask, 'b j -> (b h) () j', h=h)
+        mask = repeat(mask, 'b j -> (b h) () j', h=h)
         sim.masked_fill_(~mask, max_neg_value)
 
     attn = sim.softmax(dim=-1)
     #print(h,context.shape,q.shape,k.shape,v.shape,attn.shape)
-    out = atm.einsum('b i j, b j d -> b i d', attn, v)
+    out = torch.einsum('b i j, b j d -> b i d', attn, v)
 
-    out = atm.rearrange(out, '(b h) n d -> b n (h d)', h=h)
+    out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
 
     return module.to_out(out)
 
