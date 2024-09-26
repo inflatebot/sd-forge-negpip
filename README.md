@@ -4,7 +4,7 @@
 [<img src="https://img.shields.io/badge/语言-中文-red.svg?style=plastic" height="25" />](README_cn.md)
 [<img src="https://img.shields.io/badge/Support-%E2%99%A5-magenta.svg?logo=github&style=plastic" height="25" />](https://github.com/sponsors/hako-mikan)
 
-# hako-mikan has returned and integrated the changes in this fork in a safer way that doesn't break A1111 compatibility. This fork has effectively been made obsolete!
+### __hako-mikan has returned and integrated the changes in this fork in a safer way that doesn't break A1111 compatibility. This fork has effectively been made obsolete!__
 
 Extension for Stable Diffusion web-ui enables negative prompt in prompt.
 
